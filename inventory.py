@@ -1,7 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime, date
-from models import Medicine
 
 class InventoryMixin:
 
@@ -65,21 +64,16 @@ class InventoryMixin:
 
         for col in columns:
             self.tree.heading(col, text=col)
-            if col in ("Edit", "Delete"):
-                self.tree.column(col, anchor="center", width=110)
-            else:
-                self.tree.column(col, anchor="center", width=150)
+            self.tree.column(col, anchor="center", width=150 if col not in ("Edit", "Delete") else 110)
 
         self.tree.bind("<Button-1>", self.handle_inventory_click)
-
         self.load_inventory()
-
 
     def add_medicine(self):
         try:
-            name = self.name_entry.get()
+            name = self.name_entry.get().strip()
             med_type = self.type_combo.get()
-            expiry = datetime.strptime(self.expiry_entry.get(), "%Y-%m-%d").date()
+            expiry = datetime.strptime(self.expiry_entry.get().strip(), "%Y-%m-%d").date()
             price = float(self.price_entry.get())
             quantity = int(self.qty_entry.get())
 
@@ -87,59 +81,56 @@ class InventoryMixin:
                 messagebox.showerror("Error", "Cannot add expired medicine.")
                 return
 
+            cursor = self.db.cursor(dictionary=True)
             if self.selected_medicine_id:
-                medicine = self.session.query(Medicine).get(self.selected_medicine_id)
-                medicine.name = name
-                medicine.type = med_type
-                medicine.expiry_date = expiry
-                medicine.price = price
-                medicine.quantity = quantity
+                # Update existing medicine
+                cursor.execute(
+                    "UPDATE medicines SET name=%s, type=%s, expiry_date=%s, price=%s, quantity=%s WHERE id=%s",
+                    (name, med_type, expiry, price, quantity, self.selected_medicine_id)
+                )
                 self.selected_medicine_id = None
             else:
-                medicine = Medicine(
-                    name=name,
-                    type=med_type,
-                    expiry_date=expiry,
-                    price=price,
-                    quantity=quantity
+                # Add new medicine
+                cursor.execute(
+                    "INSERT INTO medicines (name, type, expiry_date, price, quantity) VALUES (%s, %s, %s, %s, %s)",
+                    (name, med_type, expiry, price, quantity)
                 )
-                self.session.add(medicine)
 
-            self.session.commit()
+            self.db.commit()
             messagebox.showinfo("Success", "Medicine saved successfully.")
             self.clear_inventory_form()
             self.load_inventory()
 
-            # Refresh sales dropdown if available
             if hasattr(self, "load_medicines_for_sale"):
                 self.load_medicines_for_sale()
 
         except Exception as e:
+            self.db.rollback()
             messagebox.showerror("Error", str(e))
-
 
     def load_inventory(self):
         for row in self.tree.get_children():
             self.tree.delete(row)
 
-        medicines = self.session.query(Medicine).all()
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM medicines")
+        medicines = cursor.fetchall()
 
         for med in medicines:
             self.tree.insert(
                 "",
                 "end",
                 values=(
-                    med.id,
-                    med.name,
-                    med.type,
-                    med.price,
-                    med.quantity,
-                    med.expiry_date,
+                    med['id'],
+                    med['name'],
+                    med['type'],
+                    med['price'],
+                    med['quantity'],
+                    med['expiry_date'],
                     "Edit",
                     "Delete"
                 )
             )
-
 
     def handle_inventory_click(self, event):
         item = self.tree.identify_row(event.y)
@@ -149,52 +140,41 @@ class InventoryMixin:
             return
 
         col_index = int(column.replace("#", "")) - 1
+        values = self.tree.item(item, "values")
+        med_id = values[0]
 
         if col_index == 6:
-            values = self.tree.item(item, "values")
-            med_id = values[0]
             self.edit_medicine(med_id)
-
-        if col_index == 7:
-            values = self.tree.item(item, "values")
-            med_id = values[0]
+        elif col_index == 7:
             self.delete_medicine(med_id)
 
-
     def edit_medicine(self, med_id):
-        medicine = self.session.query(Medicine).get(med_id)
+        cursor = self.db.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM medicines WHERE id=%s", (med_id,))
+        medicine = cursor.fetchone()
         if not medicine:
             return
 
         self.selected_medicine_id = med_id
-
         self.name_entry.delete(0, tk.END)
-        self.name_entry.insert(0, medicine.name)
-
-        self.type_combo.set(medicine.type)
-
+        self.name_entry.insert(0, medicine['name'])
+        self.type_combo.set(medicine['type'])
         self.expiry_entry.delete(0, tk.END)
-        self.expiry_entry.insert(0, medicine.expiry_date)
-
+        self.expiry_entry.insert(0, str(medicine['expiry_date']))
         self.price_entry.delete(0, tk.END)
-        self.price_entry.insert(0, medicine.price)
-
+        self.price_entry.insert(0, medicine['price'])
         self.qty_entry.delete(0, tk.END)
-        self.qty_entry.insert(0, medicine.quantity)
-
+        self.qty_entry.insert(0, medicine['quantity'])
 
     def delete_medicine(self, med_id):
         confirm = messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this medicine?")
         if not confirm:
             return
 
-        medicine = self.session.query(Medicine).get(med_id)
-        if medicine:
-            self.session.delete(medicine)
-            self.session.commit()
-
+        cursor = self.db.cursor()
+        cursor.execute("DELETE FROM medicines WHERE id=%s", (med_id,))
+        self.db.commit()
         self.load_inventory()
-
 
     def clear_inventory_form(self):
         self.name_entry.delete(0, tk.END)

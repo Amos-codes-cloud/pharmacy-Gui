@@ -1,8 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import date, timedelta, datetime
-from sqlalchemy import func
-from models import Sale, SaleItem, Medicine
 
 class ReportsMixin:
 
@@ -62,40 +60,39 @@ class ReportsMixin:
             messagebox.showerror("Error", "Invalid date format.")
 
     def generate_report(self, start, end):
-        total = self.session.query(func.sum(Sale.total_amount)).filter(Sale.sale_date.between(start, end)).scalar() or 0
-        count = self.session.query(func.count(Sale.id)).filter(Sale.sale_date.between(start, end)).scalar()
-
-        medicine_sales = (
-            self.session.query(
-                Medicine.name,
-                func.sum(SaleItem.quantity).label("qty_sold"),
-                func.sum(SaleItem.subtotal).label("amount_sold")
-            )
-            .join(SaleItem, Medicine.id == SaleItem.medicine_id)
-            .join(Sale, Sale.id == SaleItem.sale_id)
-            .filter(Sale.sale_date.between(start, end))
-            .group_by(Medicine.id, Medicine.name)
-            .order_by(func.sum(SaleItem.quantity).desc(), Medicine.name.asc())
-            .all()
+        # Total amount and transaction count
+        self.cursor.execute(
+            "SELECT COALESCE(SUM(total_amount),0), COUNT(id) FROM sales WHERE sale_date BETWEEN %s AND %s",
+            (start, end)
         )
+        total, count = self.cursor.fetchone()
 
-        quantity_per_day = (
-            self.session.query(
-                Sale.sale_date,
-                func.sum(SaleItem.quantity).label("qty")
-            )
-            .join(SaleItem, Sale.id == SaleItem.sale_id)
-            .filter(Sale.sale_date.between(start, end))
-            .group_by(Sale.sale_date)
-            .order_by(Sale.sale_date.asc())
-            .all()
-        )
+        # Medicine sales
+        self.cursor.execute("""
+            SELECT m.name, COALESCE(SUM(si.quantity),0), COALESCE(SUM(si.subtotal),0)
+            FROM medicines m
+            JOIN sale_items si ON m.id = si.medicine_id
+            JOIN sales s ON s.id = si.sale_id
+            WHERE s.sale_date BETWEEN %s AND %s
+            GROUP BY m.id, m.name
+            ORDER BY SUM(si.quantity) DESC, m.name ASC
+        """, (start, end))
+        medicine_sales = self.cursor.fetchall()
 
-        inventory_left = (
-            self.session.query(Medicine.name, Medicine.quantity)
-            .order_by(Medicine.name.asc())
-            .all()
-        )
+        # Quantity per day
+        self.cursor.execute("""
+            SELECT s.sale_date, COALESCE(SUM(si.quantity),0)
+            FROM sales s
+            JOIN sale_items si ON s.id = si.sale_id
+            WHERE s.sale_date BETWEEN %s AND %s
+            GROUP BY s.sale_date
+            ORDER BY s.sale_date ASC
+        """, (start, end))
+        quantity_per_day = self.cursor.fetchall()
+
+        # Inventory left
+        self.cursor.execute("SELECT name, quantity FROM medicines ORDER BY name ASC")
+        inventory_left = self.cursor.fetchall()
 
         if medicine_sales:
             top_name, top_qty, top_amount = medicine_sales[0]
@@ -104,18 +101,15 @@ class ReportsMixin:
             top_line = "Most Sold Drug: No sales in selected period"
 
         sold_lines = "\n".join(
-            f"- {name}: Qty Sold={int(qty)}, Amount={float(amount):.2f}"
-            for name, qty, amount in medicine_sales
+            f"- {name}: Qty Sold={int(qty)}, Amount={float(amount):.2f}" for name, qty, amount in medicine_sales
         ) or "- No medicine sales in selected period"
 
         qty_time_lines = "\n".join(
-            f"- {sale_day}: Qty Sold={int(qty)}"
-            for sale_day, qty in quantity_per_day
+            f"- {sale_day}: Qty Sold={int(qty)}" for sale_day, qty in quantity_per_day
         ) or "- No quantity movement in selected period"
 
         inventory_lines = "\n".join(
-            f"- {name}: Left={qty if qty is not None else 0}"
-            for name, qty in inventory_left
+            f"- {name}: Left={qty if qty is not None else 0}" for name, qty in inventory_left
         ) or "- No medicines in inventory"
 
         report = f"""
@@ -139,6 +133,3 @@ Inventory Left (Current):
 """
         self.report_box.delete("1.0", tk.END)
         self.report_box.insert(tk.END, report)
-
-
-

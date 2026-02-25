@@ -1,6 +1,8 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import mysql.connector
 from database import SessionLocal
+from connector import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER
 from models import Medicine, Sale, SaleItem, StockEntry, Patient, User
 from inventory import InventoryMixin
 from users import UserMixin
@@ -9,7 +11,32 @@ from patients import PatientMixin
 from reports import ReportsMixin
 from alert import AlertMixin
 
-class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, ReportsMixin, AlertMixin):
+
+class _CursorProxy:
+    def __init__(self, connection):
+        self._connection = connection
+        self._default_cursor = connection.cursor(dictionary=True)
+
+    def __call__(self, **kwargs):
+        return self._connection.cursor(**kwargs)
+
+    def __getattr__(self, item):
+        return getattr(self._default_cursor, item)
+
+
+class _LegacyDBAdapter:
+    def __init__(self, connection):
+        self._connection = connection
+        self.cursor = _CursorProxy(connection)
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+
+class PharmacyApp(InventoryMixin, UserMixin, SalesMixin, PatientMixin, ReportsMixin, AlertMixin):
 
     def __init__(self, root, role, username):
         self.root = root
@@ -18,6 +45,15 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
         self.root.state("zoomed")
 
         self.session = SessionLocal()
+        self.conn = mysql.connector.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME,
+            port=int(DB_PORT),
+        )
+        self.cursor = self.conn.cursor()
+        self.db = _LegacyDBAdapter(self.conn)
         self.role = role
         self.username = username
 
@@ -34,7 +70,13 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
         user_frame.pack(pady=20)
         self.user_icon = tk.Label(user_frame, text="👤", font=("Arial", 30), bg="#0d6efd", fg="white")
         self.user_icon.pack()
-        self.user_label = tk.Label(user_frame, text=f"{username} ({role.title()})", font=("Arial", 14, "bold"), bg="#0d6efd", fg="white")
+        self.user_label = tk.Label(
+            user_frame,
+            text=f"{username} ({role.title()})",
+            font=("Arial", 14, "bold"),
+            bg="#0d6efd",
+            fg="white"
+        )
         self.user_label.pack()
 
         # Menu Buttons
@@ -49,6 +91,7 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
                 ("Alerts", self.show_alerts_tab),
                 ("Staff Management", self.show_users_tab)
             ]
+
         for text, cmd in menu_buttons:
             tk.Button(
                 sidebar,
@@ -89,7 +132,6 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
         header_bar = tk.Frame(content, bg="#f8f9fa", height=60)
         header_bar.pack(side="top", fill="x")
         header_bar.pack_propagate(False)
-
         tk.Label(
             header_bar,
             text="Pharmacy Management System",
@@ -101,7 +143,6 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
         footer_bar = tk.Frame(content, bg="#198754", height=36)
         footer_bar.pack(side="bottom", fill="x")
         footer_bar.pack_propagate(False)
-
         tk.Label(
             footer_bar,
             text="© 2026 Pharmacy Management System",
@@ -113,9 +154,9 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
         body = ttk.Frame(content)
         body.pack(side="top", fill="both", expand=True)
 
+        # Tabless Notebook
         notebook_style = ttk.Style(self.root)
         notebook_style.layout("Tabless.TNotebook.Tab", [])
-
         self.notebook = ttk.Notebook(body, style="Tabless.TNotebook")
         self.notebook.pack(fill="both", expand=True)
 
@@ -136,17 +177,17 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
             self.notebook.add(self.alerts_tab, text="Alerts")
             self.notebook.add(self.users_tab, text="Staff Management")
 
+        # Map builders
         self._tab_builders = {
             "sales": (self.sales_tab, self.build_sales_tab, "Sales"),
-            "patients": (self.patients_tab, self.build_patients_tab, "Patients"),
+            "patients": (self.patients_tab, self.build_patients_tab, "Patients")
         }
-
         if self.role == "manager":
             self._tab_builders.update({
                 "inventory": (self.inventory_tab, self.build_inventory_tab, "Inventory"),
                 "reports": (self.reports_tab, self.build_reports_tab, "Reports"),
                 "alerts": (self.alerts_tab, self.build_alerts_tab, "Alerts"),
-                "users": (self.users_tab, self.build_users_tab, "Staff Management"),
+                "users": (self.users_tab, self.build_users_tab, "Staff Management")
             })
 
         self._built_tabs = set()
@@ -158,7 +199,6 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
         except Exception as e:
             messagebox.showerror("Tab Error", f"Failed to load {tab_name} tab:\n{e}")
 
-    # ---------------- Sidebar Tab Switching ----------------
     def _show_tab(self, tab_key):
         tab_widget, builder, tab_name = self._tab_builders[tab_key]
         if tab_key not in self._built_tabs:
@@ -166,6 +206,7 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
             self._built_tabs.add(tab_key)
         self.notebook.select(tab_widget)
 
+    # ---------------- Sidebar Actions ----------------
     def show_sales_tab(self):
         self._show_tab("sales")
 
@@ -184,6 +225,7 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
     def show_users_tab(self):
         self._show_tab("users")
 
+    # ---------------- Account / Password ----------------
     def open_account_window(self):
         account_win = tk.Toplevel(self.root)
         account_win.title("Account")
@@ -192,11 +234,7 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
         account_win.transient(self.root)
         account_win.grab_set()
 
-        tk.Label(
-            account_win,
-            text=f"Signed in as: {self.username}",
-            font=("Arial", 11, "bold")
-        ).pack(pady=(18, 12))
+        tk.Label(account_win, text=f"Signed in as: {self.username}", font=("Arial", 11, "bold")).pack(pady=(18, 12))
 
         tk.Button(
             account_win,
@@ -240,29 +278,18 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
         tk.Label(pwd_win, text="Current Password").pack(pady=(16, 4))
         current_entry = tk.Entry(pwd_win, show="*", width=32)
         current_entry.pack()
-
         tk.Label(pwd_win, text="New Password").pack(pady=(10, 4))
         new_entry = tk.Entry(pwd_win, show="*", width=32)
         new_entry.pack()
-
         tk.Label(pwd_win, text="Confirm New Password").pack(pady=(10, 4))
         confirm_entry = tk.Entry(pwd_win, show="*", width=32)
         confirm_entry.pack()
 
         show_pwd_var = tk.BooleanVar(value=False)
-
-        def toggle_password_visibility():
-            show_char = "" if show_pwd_var.get() else "*"
-            current_entry.config(show=show_char)
-            new_entry.config(show=show_char)
-            confirm_entry.config(show=show_char)
-
-        tk.Checkbutton(
-            pwd_win,
-            text="Show Password",
-            variable=show_pwd_var,
-            command=toggle_password_visibility
-        ).pack(pady=(8, 0))
+        tk.Checkbutton(pwd_win, text="Show Password", variable=show_pwd_var,
+                       command=lambda: [current_entry.config(show="" if show_pwd_var.get() else "*"),
+                                        new_entry.config(show="" if show_pwd_var.get() else "*"),
+                                        confirm_entry.config(show="" if show_pwd_var.get() else "*")]).pack(pady=(8, 0))
 
         def submit_password_change():
             current_pwd = current_entry.get().strip()
@@ -291,24 +318,22 @@ class PharmacyApp(tk.Tk, InventoryMixin, UserMixin, SalesMixin, PatientMixin, Re
             messagebox.showinfo("Success", "Password changed successfully.")
             pwd_win.destroy()
 
-        tk.Button(
-            pwd_win,
-            text="Update Password",
-            bg="#198754",
-            fg="white",
-            activebackground="#157347",
-            activeforeground="white",
-            relief="flat",
-            bd=0,
-            padx=12,
-            pady=8,
-            command=submit_password_change
-        ).pack(pady=18)
+        tk.Button(pwd_win, text="Update Password", bg="#198754", fg="white",
+                  activebackground="#157347", activeforeground="white",
+                  relief="flat", bd=0, padx=12, pady=8,
+                  command=submit_password_change).pack(pady=18)
 
     def logout(self):
         confirm = messagebox.askyesno("Logout", "Are you sure you want to logout?")
         if not confirm:
             return
+
+        try:
+            self.cursor.close()
+            self.conn.close()
+            self.session.close()
+        except Exception:
+            pass
 
         self.root.destroy()
         from main import launch_homepage

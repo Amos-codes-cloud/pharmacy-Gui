@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-from database import SessionLocal
+
+from connector import SessionLocal
 from models import User
 
 
@@ -25,6 +26,9 @@ class LoginForm(ttk.Frame):
                 username=self.username.get().strip(),
                 password=self.password.get().strip(),
             ).first()
+        except Exception as exc:
+            messagebox.showerror("Database Error", str(exc))
+            return
         finally:
             session.close()
 
